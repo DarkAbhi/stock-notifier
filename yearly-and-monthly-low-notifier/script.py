@@ -4,14 +4,45 @@ import logging
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 import os
+import time
 
-# List of BSE stock symbols to track (Yahoo Finance format, e.g., 'RELIANCE.BO')
 TRACKED_STOCKS = [
+    'BEL.BO',
+    'BHEL.BO',
+    'CANBK.BO',
+    'CDSL.NS',
+    'ETERNAL.BO',
+    'GOLDBEES.BO',
+    'HDFCBANK.BO',
+    'IDFCFIRSTB.BO',
+    'INFY.BO',
+    'IOC.BO',
+    'IRCTC.BO',
+    'IRFC.BO',
+    'ITBEES.NS',
+    'ITC.BO',
+    'JSL.BO',
+    'KTKBANK.NS',
+    'NHPC.BO',
+    'NTPC.BO',
+    'ONGC.BO',
+    'PNB.BO',
+    'RVNL.BO',
+    'SBIN.BO',
+    'SUZLON.BO',
+    'SWIGGY.BO',
+    'TATACONSUM.BO',
+    'TATAMOTORS.BO',
+    'TATAPOWER.BO',
+    'VEDL.BO',
+    'YESBANK.BO',
+
+    'ATHERENERG.BO',
+    'LGEINDIA.BO',
     'RELIANCE.BO',
     'BIOCON.BO',
     'ATGL.BO',
     'INOXWIND.BO',
-    'SWIGGY.BO',
     'ICICIBANK.BO',
     'AXISBANK.BO',
     'JINDALSTEL.BO',
@@ -23,6 +54,8 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+
+TELEGRAM_MESSAGE_MAX = 4000
 
 
 # Set up logging
@@ -39,23 +72,56 @@ logger = logging.getLogger(__name__)
 
 
 def send_telegram_message(message):
-    """Send a message to the configured Telegram chat."""
+    """Send a message to the configured Telegram chat, splitting into multiple messages if needed."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.error(
             "Telegram credentials are not set in environment variables.")
         return
+
+    def split_message_into_chunks(text, limit):
+        lines = text.splitlines(keepends=True)
+        chunks = []
+        current = ""
+        for line in lines:
+            if len(current) + len(line) <= limit:
+                current += line
+            else:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                if len(line) > limit:
+                    start = 0
+                    while start < len(line):
+                        chunks.append(line[start:start+limit])
+                        start += limit
+                else:
+                    current = line
+        if current:
+            chunks.append(current)
+        return chunks
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': message,
-        'parse_mode': 'HTML'
-    }
-    try:
-        response = requests.post(url, data=payload, timeout=10)
-        response.raise_for_status()
-        logger.info("Sent Telegram message: %s", message[:100])
-    except Exception as e:
-        logger.error(f"Failed to send Telegram message: {e}")
+    chunks = split_message_into_chunks(message, TELEGRAM_MESSAGE_MAX)
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks, start=1):
+        payload = {
+            'chat_id': TELEGRAM_CHAT_ID,
+            'text': chunk + (f"\n\n(Part {idx}/{total})" if total > 1 else ""),
+            'parse_mode': 'HTML'
+        }
+        try:
+            response = requests.post(url, data=payload, timeout=10)
+            response.raise_for_status()
+            if total > 1:
+                logger.info("Sent Telegram message (part %d/%d)", idx, total)
+            else:
+                logger.info("Sent Telegram message")
+                logger.info("Telegram message content: %s", chunk)
+        except Exception as e:
+            logger.error(
+                f"Failed to send Telegram message (part {idx}/{total}): {e}")
+        if idx < total:
+            time.sleep(0.5)
 
 
 def check_stocks():
@@ -79,6 +145,29 @@ def check_stocks():
                         f"No historical data for {symbol}, skipping.")
                     continue
                 monthly_low = hist['Low'].min()
+
+                fifty_two_week_low_date_text = "N/A"
+                try:
+                    hist_1y = ticker.history(period='1y', interval='1d')
+                    if (not hist_1y.empty) and ('Low' in hist_1y):
+                        tol = 1e-6
+                        mask = (hist_1y['Low'] -
+                                fifty_two_week_low).abs() <= tol
+                        if not mask.any():
+                            mask = (hist_1y['Low'] <=
+                                    fifty_two_week_low * (1 + 1e-6))
+                        if mask.any():
+                            matching_dates = hist_1y.index[mask]
+                            if len(matching_dates) > 0:
+                                date_obj = matching_dates[-1]
+                                try:
+                                    fifty_two_week_low_date_text = date_obj.date().isoformat()
+                                except Exception:
+                                    fifty_two_week_low_date_text = str(
+                                        date_obj)
+                except Exception:
+                    fifty_two_week_low_date_text = "N/A"
+
                 pct_from_52w = ((current_price - fifty_two_week_low) /
                                 fifty_two_week_low) * 100 if fifty_two_week_low else None
                 pct_from_month = ((current_price - monthly_low) /
@@ -86,17 +175,20 @@ def check_stocks():
                 summary = (
                     f"\nSummary:\n"
                     f"- {pct_from_month:.2f}% from Monthly Low (₹{monthly_low:.2f})\n"
-                    f"- {pct_from_52w:.2f}% from 52-Week Low (₹{fifty_two_week_low:.2f})"
+                    f"- {pct_from_52w:.2f}% from 52-Week Low (₹{fifty_two_week_low:.2f})\n"
+                    f"- Reached 52-Week Low on: {fifty_two_week_low_date_text}"
                 )
                 analysis_summaries.append(
-                    f"- {name} ({symbol}) has a current price of ₹{current_price:.2f}, its 52-week low price is ₹{fifty_two_week_low:.2f}, and its monthly low price is ₹{monthly_low:.2f}"
+                    f"- {name} ({symbol}) has a current price of ₹{current_price:.2f}, its 52-week low price is ₹{fifty_two_week_low:.2f} (reached on {fifty_two_week_low_date_text}), and its monthly low price is ₹{monthly_low:.2f}"
                 )
+
                 # 52-week low notification
                 if abs(current_price - fifty_two_week_low) < 1e-2:
                     message = (
                         f"\U0001F4C8 <b>{name} ({symbol})</b> has reached its <b>52-week low</b>!\n"
                         f"Current Price: ₹{current_price}\n"
-                        f"52-Week Low: ₹{fifty_two_week_low}"
+                        f"52-Week Low: ₹{fifty_two_week_low}\n"
+                        f"Reached 52-Week Low on: {fifty_two_week_low_date_text}"
                         f"{summary}"
                     )
                     send_telegram_message(message)
@@ -122,7 +214,8 @@ def check_stocks():
         logger.error(error_msg)
         send_telegram_message(error_msg)
     if not any_alert:
-        logger.info("No stocks have reached their 52-week or monthly lows today.")
+        logger.info(
+            "No stocks have reached their 52-week or monthly lows today.")
         if analysis_summaries:
             message = (
                 "No stocks have reached their 52-week or monthly lows today.\n\n"
