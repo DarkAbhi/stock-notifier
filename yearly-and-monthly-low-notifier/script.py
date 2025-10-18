@@ -5,6 +5,7 @@ from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 import os
 import time
+from pathlib import Path
 
 TRACKED_STOCKS = [
     'BEL.BO',
@@ -50,7 +51,8 @@ TRACKED_STOCKS = [
     'TCS.BO'
 ]
 
-load_dotenv()
+SCRIPT_DIR = Path(__file__).resolve().parent
+load_dotenv(dotenv_path=SCRIPT_DIR / ".env")
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
@@ -59,16 +61,19 @@ TELEGRAM_MESSAGE_MAX = 4000
 
 
 # Set up logging
-LOG_FILE = 'stock_notifier.log'
+LOG_DIR = SCRIPT_DIR / 'logs'
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / 'stock_notifier.log'
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(),
-        RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=2)
+        RotatingFileHandler(str(LOG_FILE), maxBytes=5*1024*1024, backupCount=2)
     ]
 )
 logger = logging.getLogger(__name__)
+logger.info("Logging to %s", LOG_FILE)
 
 
 def send_telegram_message(message):
